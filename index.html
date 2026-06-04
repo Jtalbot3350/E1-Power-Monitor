@@ -550,15 +550,19 @@
       <div class="stat-value accent" id="sum-meters">0 / 7</div>
     </div>
     <div class="summary-stat">
-      <div class="stat-label">Peak L1</div>
+      <div class="stat-label">Main Bus Avg</div>
+      <div class="stat-value accent" id="sum-mainavg">—</div>
+    </div>
+    <div class="summary-stat">
+      <div class="stat-label">Main Bus L1</div>
       <div class="stat-value l1" id="sum-peak-l1">—</div>
     </div>
     <div class="summary-stat">
-      <div class="stat-label">Peak L2</div>
+      <div class="stat-label">Main Bus L2</div>
       <div class="stat-value l2" id="sum-peak-l2">—</div>
     </div>
     <div class="summary-stat">
-      <div class="stat-label">Peak L3</div>
+      <div class="stat-label">Main Bus L3</div>
       <div class="stat-value l3" id="sum-peak-l3">—</div>
     </div>
     <div class="summary-stat">
@@ -671,16 +675,16 @@ function buildGrid() {
 
       <div class="stats-row">
         <div class="stat-cell">
-          <div class="stat-cell-label">V L1</div>
-          <div class="stat-cell-value volts" id="v1-${m.id}">—</div>
+          <div class="stat-cell-label">Avg Amps</div>
+          <div class="stat-cell-value" id="avg-${m.id}" style="color:var(--accent)">—</div>
         </div>
         <div class="stat-cell">
-          <div class="stat-cell-label">V L2</div>
-          <div class="stat-cell-value volts" id="v2-${m.id}">—</div>
+          <div class="stat-cell-label">V Avg</div>
+          <div class="stat-cell-value volts" id="vavg-${m.id}">—</div>
         </div>
         <div class="stat-cell">
-          <div class="stat-cell-label">V L3</div>
-          <div class="stat-cell-value volts" id="v3-${m.id}">—</div>
+          <div class="stat-cell-label">V L1/L2/L3</div>
+          <div class="stat-cell-value volts" id="vall-${m.id}" style="font-size:11px">—</div>
         </div>
         <div class="stat-cell">
           <div class="stat-cell-label">Total Load</div>
@@ -774,9 +778,13 @@ async function fetchMeter(meter) {
     updateGauge(meter.id, 'l2', l2, meter.max, meter.threshold);
     updateGauge(meter.id, 'l3', l3, meter.max, meter.threshold);
 
-    document.getElementById(`v1-${meter.id}`).textContent = v1.toFixed(1) + 'V';
-    document.getElementById(`v2-${meter.id}`).textContent = v2.toFixed(1) + 'V';
-    document.getElementById(`v3-${meter.id}`).textContent = v3.toFixed(1) + 'V';
+    const avgA = (l1 + l2 + l3) / 3;
+    const avgV = (v1 + v2 + v3) / 3;
+
+    document.getElementById(`avg-${meter.id}`).textContent = avgA.toFixed(1) + 'A';
+    document.getElementById(`vavg-${meter.id}`).textContent = avgV.toFixed(1) + 'V';
+    document.getElementById(`vall-${meter.id}`).textContent =
+      v1.toFixed(0) + ' / ' + v2.toFixed(0) + ' / ' + v3.toFixed(0);
     document.getElementById(`w-${meter.id}`).textContent = totalW >= 1000
       ? (totalW/1000).toFixed(2) + ' kW'
       : totalW.toFixed(0) + ' W';
@@ -867,9 +875,9 @@ function drawChart(meterId, threshold) {
   const n = hist.l1.length;
   if (n < 2) return;
 
-  const stackedMax = Math.max(...hist.l1.map((v,i) => v + hist.l2[i] + hist.l3[i]));
+  const stackedMax = Math.max(...hist.l1, ...hist.l2, ...hist.l3);
   // Make threshold visible — extend Y axis if needed
-  let yMax = stackedMax * 1.1;
+  let yMax = stackedMax * 1.15;
   if (threshold && threshold > yMax * 0.85) yMax = threshold * 1.15;
   yMax = yMax || 10;
 
@@ -898,29 +906,28 @@ function drawChart(meterId, threshold) {
   const xOf = i => PAD_L + (i / (n - 1)) * CW;
   const yOf = v => PAD_T + CH - Math.min(v / yMax, 1) * CH;
 
-  const y3 = hist.l3.map((v, i) => ({ x: xOf(i), y: yOf(v),                              base: PAD_T + CH }));
-  const y2 = hist.l2.map((v, i) => ({ x: xOf(i), y: yOf(hist.l3[i] + v),                 base: y3[i].y }));
-  const y1 = hist.l1.map((v, i) => ({ x: xOf(i), y: yOf(hist.l3[i] + hist.l2[i] + v),   base: y2[i].y }));
-
-  const layers = [
-    { pts: y3, fill: 'rgba(45,154,91,0.45)',   stroke: '#2d9a5b' },
-    { pts: y2, fill: 'rgba(232,163,23,0.45)',  stroke: '#e8a317' },
-    { pts: y1, fill: 'rgba(214,40,40,0.45)',   stroke: '#d62828' },
+  // Draw each leg as a separate line (NOT stacked)
+  const legs = [
+    { data: hist.l1, stroke: '#d62828', fill: 'rgba(214,40,40,0.10)' },
+    { data: hist.l2, stroke: '#e8a317', fill: 'rgba(232,163,23,0.10)' },
+    { data: hist.l3, stroke: '#2d9a5b', fill: 'rgba(45,154,91,0.10)' },
   ];
 
-  layers.forEach(({ pts, fill, stroke }) => {
+  legs.forEach(({ data, stroke, fill }) => {
+    // Light fill under the line for visibility
     ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].base);
-    pts.forEach(p => ctx.lineTo(p.x, p.y));
-    for (let i = pts.length - 1; i >= 0; i--) ctx.lineTo(pts[i].x, pts[i].base);
+    ctx.moveTo(xOf(0), PAD_T + CH);
+    data.forEach((v, i) => ctx.lineTo(xOf(i), yOf(v)));
+    ctx.lineTo(xOf(data.length - 1), PAD_T + CH);
     ctx.closePath();
     ctx.fillStyle = fill;
     ctx.fill();
 
+    // The line itself
     ctx.beginPath();
-    pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    data.forEach((v, i) => i === 0 ? ctx.moveTo(xOf(i), yOf(v)) : ctx.lineTo(xOf(i), yOf(v)));
     ctx.strokeStyle = stroke;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.4;
     ctx.stroke();
   });
 
@@ -998,20 +1005,33 @@ function drawChart(meterId, threshold) {
 //  SUMMARY
 // ════════════════════════════════════════════
 function updateSummary() {
-  let peakL1 = 0, peakL2 = 0, peakL3 = 0, totalKW = 0, online = 0;
+  let totalKW = 0, online = 0;
   METERS.forEach(m => {
     if (state[m.id].online) online++;
     const d = state[m.id].latest;
     if (!d) return;
-    if (d.l1 > peakL1) peakL1 = d.l1;
-    if (d.l2 > peakL2) peakL2 = d.l2;
-    if (d.l3 > peakL3) peakL3 = d.l3;
     totalKW += d.totalW;
   });
+
+  // Find the Main Busbar meter (ID ends in 48859)
+  const mainMeter = METERS.find(m => m.id === '000000048859');
+  const mainData = mainMeter ? state[mainMeter.id].latest : null;
+
   document.getElementById('sum-meters').textContent = `${online} / ${METERS.length}`;
-  document.getElementById('sum-peak-l1').textContent = peakL1 > 0 ? peakL1.toFixed(1) + 'A' : '—';
-  document.getElementById('sum-peak-l2').textContent = peakL2 > 0 ? peakL2.toFixed(1) + 'A' : '—';
-  document.getElementById('sum-peak-l3').textContent = peakL3 > 0 ? peakL3.toFixed(1) + 'A' : '—';
+
+  if (mainData) {
+    const avg = (mainData.l1 + mainData.l2 + mainData.l3) / 3;
+    document.getElementById('sum-mainavg').textContent = avg.toFixed(1) + 'A';
+    document.getElementById('sum-peak-l1').textContent = mainData.l1.toFixed(1) + 'A';
+    document.getElementById('sum-peak-l2').textContent = mainData.l2.toFixed(1) + 'A';
+    document.getElementById('sum-peak-l3').textContent = mainData.l3.toFixed(1) + 'A';
+  } else {
+    document.getElementById('sum-mainavg').textContent = '—';
+    document.getElementById('sum-peak-l1').textContent = '—';
+    document.getElementById('sum-peak-l2').textContent = '—';
+    document.getElementById('sum-peak-l3').textContent = '—';
+  }
+
   document.getElementById('sum-kw').textContent = totalKW > 0 ? (totalKW/1000).toFixed(1) + ' kW' : '—';
 
   const now = new Date();
