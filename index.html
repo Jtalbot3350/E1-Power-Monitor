@@ -740,7 +740,7 @@ async function fetchMeter(meter) {
         s.history.l1.push(parseFloat(read.Amps_Ln_1) || 0);
         s.history.l2.push(parseFloat(read.Amps_Ln_2) || 0);
         s.history.l3.push(parseFloat(read.Amps_Ln_3) || 0);
-        s.history.ts.push((read.Date && read.Time) ? (read.Date + ' ' + read.Time) : '');
+        s.history.ts.push(parseInt(read.Time_Stamp_UTC_ms) || 0);
       });
       s.historyLoaded = true;
       const loadEl = document.getElementById(`chart-loading-${meter.id}`);
@@ -750,7 +750,7 @@ async function fetchMeter(meter) {
       s.history.l1.push(parseFloat(read.Amps_Ln_1) || 0);
       s.history.l2.push(parseFloat(read.Amps_Ln_2) || 0);
       s.history.l3.push(parseFloat(read.Amps_Ln_3) || 0);
-      s.history.ts.push((read.Date && read.Time) ? (read.Date + ' ' + read.Time) : '');
+      s.history.ts.push(parseInt(read.Time_Stamp_UTC_ms) || 0);
       if (s.history.l1.length > HISTORY_LEN) {
         s.history.l1.shift(); s.history.l2.shift();
         s.history.l3.shift(); s.history.ts.shift();
@@ -768,7 +768,7 @@ async function fetchMeter(meter) {
     const w2 = parseFloat(latest.RMS_Watts_Ln_2) || 0;
     const w3 = parseFloat(latest.RMS_Watts_Ln_3) || 0;
     const totalW = parseFloat(latest.RMS_Watts_Tot) || (w1 + w2 + w3);
-    const timestamp = (latest.Date && latest.Time) ? (latest.Date + ' ' + latest.Time) : '';
+    const timestamp = parseInt(latest.Time_Stamp_UTC_ms) || 0;
 
     s.latest = { l1, l2, l3, v1, v2, v3, totalW, timestamp };
     s.error = null;
@@ -791,16 +791,9 @@ async function fetchMeter(meter) {
 
     let timeStr = '—';
     if (timestamp) {
-      try {
-        // EKM gives "YYYY-MM-DD HH:MM:SS.mmm" format
-        const d = new Date(timestamp.replace(' ', 'T'));
-        if (!isNaN(d.getTime())) {
-          timeStr = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-        } else {
-          timeStr = timestamp.slice(11,19) || '—';
-        }
-      } catch(e) {
-        timeStr = timestamp.slice(11,19) || '—';
+      const d = new Date(timestamp);
+      if (!isNaN(d.getTime())) {
+        timeStr = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
       }
     }
     document.getElementById(`upd-${meter.id}`).textContent = timeStr;
@@ -839,10 +832,10 @@ function updateGauge(meterId, leg, value, max, threshold) {
   arc.style.strokeDashoffset = offset;
   valEl.textContent = value.toFixed(1);
 
-  // Warn when over threshold
+  // Warn only when THIS individual leg exceeds threshold
   if (threshold && value >= threshold) {
-    arc.style.stroke = 'var(--warn)';
-    valEl.style.color = 'var(--warn)';
+    arc.style.stroke = '#ff8c00';
+    valEl.style.color = '#ff8c00';
   } else {
     arc.style.stroke = '';
     valEl.style.color = '';
@@ -906,28 +899,33 @@ function drawChart(meterId, threshold) {
   const xOf = i => PAD_L + (i / (n - 1)) * CW;
   const yOf = v => PAD_T + CH - Math.min(v / yMax, 1) * CH;
 
-  // Draw each leg as a separate line (NOT stacked)
+  // Draw each leg as a separate line (NOT stacked, NO fill)
   const legs = [
-    { data: hist.l1, stroke: '#d62828', fill: 'rgba(214,40,40,0.10)' },
-    { data: hist.l2, stroke: '#e8a317', fill: 'rgba(232,163,23,0.10)' },
-    { data: hist.l3, stroke: '#2d9a5b', fill: 'rgba(45,154,91,0.10)' },
+    { data: hist.l1, stroke: '#d62828', label: 'L1' },
+    { data: hist.l2, stroke: '#e8a317', label: 'L2' },
+    { data: hist.l3, stroke: '#2d9a5b', label: 'L3' },
   ];
 
-  legs.forEach(({ data, stroke, fill }) => {
-    // Light fill under the line for visibility
-    ctx.beginPath();
-    ctx.moveTo(xOf(0), PAD_T + CH);
-    data.forEach((v, i) => ctx.lineTo(xOf(i), yOf(v)));
-    ctx.lineTo(xOf(data.length - 1), PAD_T + CH);
-    ctx.closePath();
-    ctx.fillStyle = fill;
-    ctx.fill();
-
-    // The line itself
+  legs.forEach(({ data, stroke }) => {
     ctx.beginPath();
     data.forEach((v, i) => i === 0 ? ctx.moveTo(xOf(i), yOf(v)) : ctx.lineTo(xOf(i), yOf(v)));
     ctx.strokeStyle = stroke;
-    ctx.lineWidth = 1.4;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  });
+
+  // Draw current value endpoint dots
+  legs.forEach(({ data, stroke }) => {
+    const lastIdx = data.length - 1;
+    const x = xOf(lastIdx);
+    const y = yOf(data[lastIdx]);
+    ctx.beginPath();
+    ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = stroke;
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
     ctx.stroke();
   });
 
@@ -970,17 +968,11 @@ function drawChart(meterId, threshold) {
     const tsRaw = hist.ts[idx];
     let label = '';
     if (tsRaw) {
-      try {
-        const d = new Date(tsRaw.replace(' ', 'T'));
-        if (!isNaN(d.getTime())) {
-          const h = d.getHours().toString().padStart(2,'0');
-          const min = d.getMinutes().toString().padStart(2,'0');
-          label = `${h}:${min}`;
-        } else {
-          label = tsRaw.slice(11,16) || '';
-        }
-      } catch(e) {
-        label = tsRaw.slice(11,16) || '';
+      const d = new Date(tsRaw);
+      if (!isNaN(d.getTime())) {
+        const h = d.getHours().toString().padStart(2,'0');
+        const min = d.getMinutes().toString().padStart(2,'0');
+        label = `${h}:${min}`;
       }
     }
     ctx.strokeStyle = '#b4bfcb';
