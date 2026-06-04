@@ -704,7 +704,7 @@ function buildGrid() {
 async function fetchMeter(meter) {
   const s = state[meter.id];
   const cnt = s.historyLoaded ? 1 : 720;
-  const url = `https://api.ekmpush.com/1/each/1m/L1_Amps,L2_Amps,L3_Amps,Volts_Ln_1,Volts_Ln_2,Volts_Ln_3,RMS_Watts_Ln_1,RMS_Watts_Ln_2,RMS_Watts_Ln_3/${meter.id}.json?key=${API_KEY}&cnt=${cnt}`;
+  const url = `https://api.ekmpush.com/readmeter?meters=${meter.id}&key=${API_KEY}&fmt=json&cnt=${cnt}`;
 
   const card = document.getElementById(`card-${meter.id}`);
   const statusWrap = document.getElementById(`status-wrap-${meter.id}`);
@@ -720,7 +720,7 @@ async function fetchMeter(meter) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
 
-    const readSet = json && json.readmeter && json.readmeter.ReadSet;
+    const readSet = json && (json.readMeter || json.readmeter) && (json.readMeter || json.readmeter).ReadSet;
     if (!readSet || readSet.length === 0) throw new Error('No data returned');
 
     const readData = readSet[0] && readSet[0].ReadData;
@@ -733,20 +733,20 @@ async function fetchMeter(meter) {
       s.history.l3 = [];
       s.history.ts = [];
       sorted.forEach(read => {
-        s.history.l1.push(parseFloat(read.L1_Amps) || 0);
-        s.history.l2.push(parseFloat(read.L2_Amps) || 0);
-        s.history.l3.push(parseFloat(read.L3_Amps) || 0);
-        s.history.ts.push(read.DateTime_UTC || read.DateTime || '');
+        s.history.l1.push(parseFloat(read.Amps_Ln_1) || 0);
+        s.history.l2.push(parseFloat(read.Amps_Ln_2) || 0);
+        s.history.l3.push(parseFloat(read.Amps_Ln_3) || 0);
+        s.history.ts.push((read.Date && read.Time) ? (read.Date + ' ' + read.Time) : '');
       });
       s.historyLoaded = true;
       const loadEl = document.getElementById(`chart-loading-${meter.id}`);
       if (loadEl) loadEl.style.display = 'none';
     } else {
       const read = readData[0];
-      s.history.l1.push(parseFloat(read.L1_Amps) || 0);
-      s.history.l2.push(parseFloat(read.L2_Amps) || 0);
-      s.history.l3.push(parseFloat(read.L3_Amps) || 0);
-      s.history.ts.push(read.DateTime_UTC || read.DateTime || '');
+      s.history.l1.push(parseFloat(read.Amps_Ln_1) || 0);
+      s.history.l2.push(parseFloat(read.Amps_Ln_2) || 0);
+      s.history.l3.push(parseFloat(read.Amps_Ln_3) || 0);
+      s.history.ts.push((read.Date && read.Time) ? (read.Date + ' ' + read.Time) : '');
       if (s.history.l1.length > HISTORY_LEN) {
         s.history.l1.shift(); s.history.l2.shift();
         s.history.l3.shift(); s.history.ts.shift();
@@ -754,17 +754,17 @@ async function fetchMeter(meter) {
     }
 
     const latest = readData[0];
-    const l1 = parseFloat(latest.L1_Amps) || 0;
-    const l2 = parseFloat(latest.L2_Amps) || 0;
-    const l3 = parseFloat(latest.L3_Amps) || 0;
-    const v1 = parseFloat(latest.Volts_Ln_1) || 0;
-    const v2 = parseFloat(latest.Volts_Ln_2) || 0;
-    const v3 = parseFloat(latest.Volts_Ln_3) || 0;
+    const l1 = parseFloat(latest.Amps_Ln_1) || 0;
+    const l2 = parseFloat(latest.Amps_Ln_2) || 0;
+    const l3 = parseFloat(latest.Amps_Ln_3) || 0;
+    const v1 = parseFloat(latest.RMS_Volts_Ln_1) || 0;
+    const v2 = parseFloat(latest.RMS_Volts_Ln_2) || 0;
+    const v3 = parseFloat(latest.RMS_Volts_Ln_3) || 0;
     const w1 = parseFloat(latest.RMS_Watts_Ln_1) || 0;
     const w2 = parseFloat(latest.RMS_Watts_Ln_2) || 0;
     const w3 = parseFloat(latest.RMS_Watts_Ln_3) || 0;
-    const totalW = w1 + w2 + w3;
-    const timestamp = latest.DateTime_UTC || latest.DateTime || '';
+    const totalW = parseFloat(latest.RMS_Watts_Tot) || (w1 + w2 + w3);
+    const timestamp = (latest.Date && latest.Time) ? (latest.Date + ' ' + latest.Time) : '';
 
     s.latest = { l1, l2, l3, v1, v2, v3, totalW, timestamp };
     s.error = null;
@@ -784,8 +784,13 @@ async function fetchMeter(meter) {
     let timeStr = '—';
     if (timestamp) {
       try {
-        const d = new Date(timestamp.replace(' ', 'T') + 'Z');
-        timeStr = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+        // EKM gives "YYYY-MM-DD HH:MM:SS.mmm" format
+        const d = new Date(timestamp.replace(' ', 'T'));
+        if (!isNaN(d.getTime())) {
+          timeStr = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+        } else {
+          timeStr = timestamp.slice(11,19) || '—';
+        }
       } catch(e) {
         timeStr = timestamp.slice(11,19) || '—';
       }
@@ -959,10 +964,14 @@ function drawChart(meterId, threshold) {
     let label = '';
     if (tsRaw) {
       try {
-        const d = new Date(tsRaw.replace(' ', 'T') + 'Z');
-        const h = d.getHours().toString().padStart(2,'0');
-        const min = d.getMinutes().toString().padStart(2,'0');
-        label = `${h}:${min}`;
+        const d = new Date(tsRaw.replace(' ', 'T'));
+        if (!isNaN(d.getTime())) {
+          const h = d.getHours().toString().padStart(2,'0');
+          const min = d.getMinutes().toString().padStart(2,'0');
+          label = `${h}:${min}`;
+        } else {
+          label = tsRaw.slice(11,16) || '';
+        }
       } catch(e) {
         label = tsRaw.slice(11,16) || '';
       }
