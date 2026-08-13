@@ -659,13 +659,13 @@
 // ════════════════════════════════════════════
 const API_KEY = 'NjUyNTYzMjE6aVRXb0JUbjRTNjk1eTIxS2Vz';
 const METERS = [
-  { id: '000000048859', name: 'Main Busbar',       max: 1000, threshold: 850 },
-  { id: '000000048854', name: 'Service Gear 400A', max: 400,  threshold: 340 },
-  { id: '000000048738', name: 'E1 Panel HD 200A',  max: 200,  threshold: 170 },
-  { id: '000000048739', name: 'E1 400A Salvagini', max: 400,  threshold: 340 },
-  { id: '000000048733', name: 'E1 Panel HA',       max: 200,  threshold: 170 },
-  { id: '000000048754', name: 'E1 Panel HB',       max: 200,  threshold: 170 },
-  { id: '000000048750', name: 'E1 Panel HC',       max: 200,  threshold: 170 },
+  { id: '000000048859', name: 'Main Busbar 1000A',                                max: 1000, threshold: 900 },
+  { id: '000000048854', name: 'E1 Service Gear 600A (Panels A,B,C,D,DAH,F,F1,G)', max: 600,  threshold: 540 },
+  { id: '000000048739', name: 'E1 400A Raceway (L3-3 / Unused disconnect)',       max: 400,  threshold: 360 },
+  { id: '000000048733', name: 'E1 200A HA (Inline 3- S4/P4)',                     max: 200,  threshold: 180 },
+  { id: '000000048754', name: 'E1 200A HB (Inline 1- S4/P4)',                     max: 200,  threshold: 180 },
+  { id: '000000048750', name: 'E1 200A HC (P4-5 Lean)',                           max: 200,  threshold: 180 },
+  { id: '000000048738', name: 'E1 200A HD (Inline 2- S4/P4)',                     max: 200,  threshold: 180 },
 ];
 
 const HISTORY_LEN = 720;     // 12hrs at 1/min
