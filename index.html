@@ -840,7 +840,7 @@ async function fetchMeter(meter) {
     const totalW = parseFloat(latest.RMS_Watts_Tot) || (w1 + w2 + w3);
     const timestamp = parseInt(latest.Time_Stamp_UTC_ms) || 0;
 
-    s.latest = { l1, l2, l3, v1, v2, v3, totalW, timestamp };
+    s.latest = { l1, l2, l3, v1, v2, v3, w1, w2, w3, totalW, timestamp };
     s.error = null;
     s.online = true;
 
@@ -1157,6 +1157,348 @@ startCountdown();
 window.addEventListener('resize', () => {
   METERS.forEach(m => drawChart(m.id, m.threshold));
 });
+
+/* ===== TROUBLESHOOTING MODULE (appended) ===== */
+/* =====================================================================
+   UMP POWER MONITOR — TROUBLESHOOTING MODULE  (additive, self-contained)
+   Reads existing globals: METERS, state, updateSummary
+   Adds: L1 / L2 / L3 per-branch windows + Main-bus reconciliation window
+   ===================================================================== */
+(function(){
+  const MAIN_ID = '000000048859';                         // Main Busbar
+  const BRANCH_IDS = () => METERS.filter(m => m.id !== MAIN_ID).map(m => m.id);
+  const PHASES = ['l1','l2','l3'];
+  const PLBL = ['L1','L2','L3'];
+ 
+  // Tolerance bands for KCL closure (see engineering notes in UI).
+  // Grounded in CT accuracy class (~0.5–1.0%) + non-simultaneous polling skew.
+  const KCL_OK = 2.0, KCL_WATCH = 5.0;     // percent of main-bus current
+  const PF_MAX = 1.02;                       // >1.0 is impossible; 1.02 allows rounding
+  const PF_LOW = 0.55;                        // below this on a loaded leg is suspicious
+  const V_DEV = 5.0;                          // % voltage deviation from fleet mean
+  const IMB_WATCH = 15.0;                     // % NEMA phase imbalance worth noting
+  const ROOT3 = Math.SQRT2 * Math.sqrt(1.5);  // 1.7320508
+ 
+  const nmeterName = id => (METERS.find(m=>m.id===id)||{}).name || id;
+  const nmax       = id => (METERS.find(m=>m.id===id)||{}).max  || 200;
+ 
+  /* ---------- one-time style + DOM ---------- */
+  function injectStyle(){
+    const css = `
+    .ts-section{padding:12px;display:grid;gap:12px;
+      grid-template-columns:repeat(auto-fit,minmax(320px,1fr));}
+    .ts-section .ts-recon{grid-column:1/-1;}
+    .ts-card{background:rgba(255,255,255,0.9);border:1px solid var(--border);
+      border-radius:6px;padding:14px 16px;box-shadow:0 2px 10px rgba(0,0,0,.08);
+      backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+    .ts-title{font-size:13px;font-weight:700;color:var(--text);letter-spacing:.3px;
+      display:flex;justify-content:space-between;align-items:baseline;
+      padding-bottom:8px;margin-bottom:10px;border-bottom:1px solid var(--border);}
+    .ts-title .sub{font:600 10px 'JetBrains Mono',monospace;color:var(--muted);
+      letter-spacing:.5px;text-transform:uppercase;}
+    .ts-bar-row{display:grid;grid-template-columns:120px 1fr 74px;gap:8px;
+      align-items:center;margin:7px 0;}
+    .ts-bar-name{font-size:11px;font-weight:600;color:var(--text-soft);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .ts-bar-track{position:relative;height:16px;background:var(--panel-soft);
+      border:1px solid var(--border);border-radius:3px;overflow:hidden;}
+    .ts-bar-fill{position:absolute;left:0;top:0;bottom:0;border-radius:3px 0 0 3px;
+      transition:width .6s cubic-bezier(.4,0,.2,1),background .3s;}
+    .ts-bar-thresh{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--warn);}
+    .ts-bar-val{font:700 12px 'JetBrains Mono',monospace;text-align:right;color:var(--text);}
+    .ts-foot{margin-top:10px;padding-top:8px;border-top:1px solid var(--border);
+      font:700 11px 'JetBrains Mono',monospace;color:var(--text-soft);
+      display:flex;justify-content:space-between;}
+    .ts-tbl{width:100%;border-collapse:collapse;font:500 11px 'JetBrains Mono',monospace;}
+    .ts-tbl th{font:600 9px 'Inter',sans-serif;letter-spacing:.6px;text-transform:uppercase;
+      color:var(--muted);text-align:right;padding:5px 6px;border-bottom:1px solid var(--border);}
+    .ts-tbl th:first-child{text-align:left;}
+    .ts-tbl td{padding:5px 6px;text-align:right;border-bottom:1px solid #eef1f5;}
+    .ts-tbl td:first-child{text-align:left;font-weight:600;color:var(--text);}
+    .ts-tbl tr.main td{background:#eaf2fb;}
+    .v-ok{color:var(--l3);} .v-amber{color:var(--l2);} .v-red{color:var(--l1);font-weight:700;}
+    .ts-verdict{display:inline-block;padding:2px 8px;border-radius:3px;
+      font:700 10px 'Inter',sans-serif;letter-spacing:.4px;text-transform:uppercase;}
+    .vb-ok{background:var(--l3-bg);color:var(--l3);}
+    .vb-amber{background:var(--l2-bg);color:#a97400;}
+    .vb-red{background:var(--l1-bg);color:var(--l1);}
+    .ts-findings{margin-top:12px;display:flex;flex-direction:column;gap:8px;}
+    .ts-find{display:flex;gap:9px;padding:9px 11px;border-radius:5px;
+      border:1px solid var(--border);background:var(--panel-soft);font-size:12px;line-height:1.5;}
+    .ts-find.red{border-left:3px solid var(--l1);background:#fdecec;}
+    .ts-find.amber{border-left:3px solid var(--l2);background:#fdf5e0;}
+    .ts-find.green{border-left:3px solid var(--l3);background:#e6f5ec;}
+    .ts-find.info{border-left:3px solid var(--accent);background:#e3f0ff;}
+    .ts-find .fdot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;margin-top:5px;}
+    .ts-find.red .fdot{background:var(--l1);} .ts-find.amber .fdot{background:var(--l2);}
+    .ts-find.green .fdot{background:var(--l3);} .ts-find.info .fdot{background:var(--accent);}
+    .ts-find b{color:var(--text);} .ts-find code{font:600 11px 'JetBrains Mono',monospace;
+      background:rgba(0,0,0,.05);padding:1px 4px;border-radius:3px;color:#1a2332;}
+    .ts-sub-h{font:700 10px 'Inter',sans-serif;letter-spacing:.8px;text-transform:uppercase;
+      color:var(--muted);margin:14px 0 6px;}
+    @media print{.ts-card{background:#fff!important;box-shadow:none!important;}
+      .ts-section{grid-template-columns:1fr 1fr!important;}}
+    `;
+    const st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
+  }
+ 
+  function buildDom(){
+    const footer = document.querySelector('footer');
+    const sec = document.createElement('div'); sec.className = 'ts-section'; sec.id = 'ts-section';
+    // three phase windows
+    PLBL.forEach((p,i) => {
+      const c = document.createElement('div'); c.className='ts-card'; c.id=`ts-${PHASES[i]}`;
+      c.innerHTML = `<div class="ts-title">Branch Currents — ${p}
+        <span class="sub">excl. main bus</span></div>
+        <div class="ts-bars" id="ts-bars-${PHASES[i]}"></div>
+        <div class="ts-foot"><span>Σ BRANCHES</span><span id="ts-sum-${PHASES[i]}">— A</span></div>`;
+      sec.appendChild(c);
+    });
+    // reconciliation window
+    const r = document.createElement('div'); r.className='ts-card ts-recon';
+    r.innerHTML = `<div class="ts-title">Main Bus Reconciliation &amp; Anomaly Detection
+        <span class="sub">KCL · CT/PT integrity</span></div>
+      <div class="ts-sub-h">Current balance — Kirchhoff's Current Law (I_main = Σ I_branches)</div>
+      <table class="ts-tbl" id="ts-kcl"><thead><tr>
+        <th>Phase</th><th>Main (A)</th><th>Σ Branch (A)</th><th>Δ (A)</th><th>Δ %</th><th>Verdict</th>
+      </tr></thead><tbody></tbody></table>
+      <div class="ts-sub-h">Per-meter integrity (power factor / voltage / imbalance)</div>
+      <table class="ts-tbl" id="ts-integrity"><thead><tr>
+        <th>Meter</th><th>V avg</th><th>PF L1</th><th>PF L2</th><th>PF L3</th><th>Imbal %</th>
+      </tr></thead><tbody></tbody></table>
+      <div class="ts-sub-h">Diagnostics</div>
+      <div class="ts-findings" id="ts-findings"></div>`;
+    sec.appendChild(r);
+    footer.parentNode.insertBefore(sec, footer);
+  }
+ 
+  /* ---------- math helpers ---------- */
+  const pfLeg = (w,v,i) => (v>1 && i>0.4) ? (w/(v*i)) : null;      // per-leg power factor
+  const imbalance = (a,b,c) => { const avg=(a+b+c)/3; if(avg<=0)return 0;
+    return Math.max(Math.abs(a-avg),Math.abs(b-avg),Math.abs(c-avg))/avg*100; };
+  const fmt = (n,d=1)=> (n===null||isNaN(n))?'—':n.toFixed(d);
+ 
+  /* ---------- render ---------- */
+  function render(){
+    if (typeof state==='undefined') return;
+    const branches = BRANCH_IDS();
+    const online = id => state[id] && state[id].latest && state[id].online;
+ 
+    // ----- phase windows -----
+    PHASES.forEach((ph,pi) => {
+      const wrap = document.getElementById(`ts-bars-${ph}`); if(!wrap) return;
+      wrap.innerHTML=''; let sum=0;
+      branches.forEach(id=>{
+        const L = online(id)?state[id].latest:null;
+        const val = L?L[ph]:null; if(val!==null) sum+=val;
+        const mx = nmax(id); const m=METERS.find(x=>x.id===id);
+        const thr = m?m.threshold:mx*0.9;
+        const pct = val!==null?Math.min(val/mx,1)*100:0;
+        const thrPct = Math.min(thr/mx,1)*100;
+        const col = val===null?'#ccc': val>=thr?'var(--warn)': pct>70?'var(--l2)':'var(--l3)';
+        const row=document.createElement('div'); row.className='ts-bar-row';
+        row.innerHTML=`<div class="ts-bar-name" title="${nmeterName(id)}">${nmeterName(id)}</div>
+          <div class="ts-bar-track">
+            <div class="ts-bar-fill" style="width:${pct}%;background:${col}"></div>
+            <div class="ts-bar-thresh" style="left:${thrPct}%"></div></div>
+          <div class="ts-bar-val">${val===null?'offline':val.toFixed(1)+' A'}</div>`;
+        wrap.appendChild(row);
+      });
+      const se=document.getElementById(`ts-sum-${ph}`); if(se) se.textContent=sum.toFixed(1)+' A';
+    });
+ 
+    // ----- reconciliation -----
+    const M = online(MAIN_ID)?state[MAIN_ID].latest:null;
+    const sums = {l1:0,l2:0,l3:0}, offlineBranches=[];
+    branches.forEach(id=>{ if(online(id)){const L=state[id].latest;
+      sums.l1+=L.l1;sums.l2+=L.l2;sums.l3+=L.l3;} else offlineBranches.push(id); });
+ 
+    // KCL table
+    const kb=document.querySelector('#ts-kcl tbody'); kb.innerHTML='';
+    const resid={};
+    PHASES.forEach((ph,pi)=>{
+      const mv=M?M[ph]:null, sv=sums[ph];
+      let d=null,dp=null,cls='vb-amber',txt='no main';
+      if(mv!==null){ d=mv-sv; dp=mv!==0?(d/mv*100):0;
+        const a=Math.abs(dp);
+        if(a<=KCL_OK){cls='vb-ok';txt='consistent';}
+        else if(a<=KCL_WATCH){cls='vb-amber';txt='watch';}
+        else {cls='vb-red';txt='anomaly';} }
+      resid[ph]={d,dp};
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${PLBL[pi]}</td><td>${mv===null?'—':mv.toFixed(1)}</td>
+        <td>${sv.toFixed(1)}</td><td>${d===null?'—':(d>=0?'+':'')+d.toFixed(1)}</td>
+        <td>${dp===null?'—':(dp>=0?'+':'')+dp.toFixed(2)+'%'}</td>
+        <td><span class="ts-verdict ${cls}">${txt}</span></td>`;
+      kb.appendChild(tr);
+    });
+ 
+    // integrity table (all meters incl main)
+    const ib=document.querySelector('#ts-integrity tbody'); ib.innerHTML='';
+    const vlist=[];
+    [MAIN_ID,...branches].forEach(id=>{
+      if(!online(id)){ const tr=document.createElement('tr');
+        tr.innerHTML=`<td>${nmeterName(id)}</td><td colspan="5" class="v-amber">offline</td>`;
+        if(id===MAIN_ID)tr.className='main'; ib.appendChild(tr); return; }
+      const L=state[id].latest;
+      const vavg=(L.v1+L.v2+L.v3)/3; vlist.push({id,vavg});
+      const p1=pfLeg(L.w1,L.v1,L.l1),p2=pfLeg(L.w2,L.v2,L.l2),p3=pfLeg(L.w3,L.v3,L.l3);
+      const pfCls=v=> v===null?'':(v>PF_MAX?'v-red':(v<PF_LOW?'v-amber':'v-ok'));
+      const imb=imbalance(L.l1,L.l2,L.l3);
+      const tr=document.createElement('tr'); if(id===MAIN_ID)tr.className='main';
+      tr.innerHTML=`<td>${nmeterName(id)}</td><td>${vavg.toFixed(1)}</td>
+        <td class="${pfCls(p1)}">${fmt(p1,2)}</td>
+        <td class="${pfCls(p2)}">${fmt(p2,2)}</td>
+        <td class="${pfCls(p3)}">${fmt(p3,2)}</td>
+        <td class="${imb>IMB_WATCH?'v-amber':''}">${imb.toFixed(1)}</td>`;
+      ib.appendChild(tr);
+    });
+ 
+    renderFindings(M,sums,resid,branches,offlineBranches,vlist);
+  }
+ 
+  function add(F,sev,html){ F.push({sev,html}); }
+ 
+  function renderFindings(M,sums,resid,branches,offlineBranches,vlist){
+    const F=[]; const online=id=>state[id]&&state[id].latest&&state[id].online;
+ 
+    // 0. offline coverage
+    if(offlineBranches.length){
+      add(F,'amber',`<b>Partial data.</b> ${offlineBranches.length} branch meter(s) offline `
+        +`(${offlineBranches.map(nmeterName).join(', ')}). Current-balance below is computed on `
+        +`the meters reporting and will under-count Σ branches.`);
+    }
+ 
+    // 1. KCL per phase + topology self-validation
+    if(M){
+      const good=PHASES.filter(p=>resid[p].dp!==null&&Math.abs(resid[p].dp)<=KCL_OK);
+      const bad =PHASES.filter(p=>resid[p].dp!==null&&Math.abs(resid[p].dp)>KCL_WATCH);
+      if(good.length>=1){
+        const parts=good.map(p=>`${p.toUpperCase()} ${resid[p].dp>=0?'+':''}${resid[p].dp.toFixed(2)}%`);
+        add(F,'green',`<b>Topology validated.</b> ${parts.join(', ')} reconcile within the `
+          +`±${KCL_OK}% band, confirming a flat bus (all ${branches.length} branches in parallel off the main). `
+          +`Any phase that does <i>not</i> close against this topology is a genuine measurement anomaly, not a wiring-map guess.`);
+      }
+      // attribution for each bad phase
+      bad.forEach(ph=>{
+        const pi=PHASES.indexOf(ph); const r=resid[ph];
+        // find branch whose leg deviates most from its own 3φ average in the residual's direction
+        let best=null;
+        branches.forEach(id=>{ if(!online(id))return; const L=state[id].latest;
+          const avg=(L.l1+L.l2+L.l3)/3; const exc=L[ph]-avg;
+          // residual negative => branches too high => look for positive excess; and vice-versa
+          const aligned = r.d<0 ? exc : -exc;
+          if(!best||aligned>best.aligned) best={id,exc,avg,val:L[ph],aligned}; });
+        const dir = r.d<0 ? 'exceeds' : 'falls short of';
+        let msg=`<b>${ph.toUpperCase()} current-balance anomaly.</b> Σ branches ${dir} the main bus by `
+          +`<code>${Math.abs(r.d).toFixed(1)} A (${Math.abs(r.dp).toFixed(1)}%)</code>. `;
+        if(best && Math.abs(best.exc)>3){
+          msg+=`Isolating by per-leg imbalance, <b>${nmeterName(best.id)}</b> reads `
+            +`<code>${best.val.toFixed(1)} A</code> on ${ph.toUpperCase()} vs its own 3-phase average of `
+            +`<code>${best.avg.toFixed(1)} A</code> (${best.exc>=0?'+':''}${best.exc.toFixed(1)} A) — `
+            +`the single largest contributor. `;
+          if(r.d<0){
+            msg+=`If that panel's downstream loads are balanced, +${best.exc.toFixed(0)} A on one leg is suspect: `
+              +`check that meter's ${ph.toUpperCase()} CT <b>ratio</b> (a ratio set high reads high) and its `
+              +`CT-to-voltage <b>phase mapping</b>. If the panel genuinely carries single-phase ${ph.toUpperCase()} load, the reading is real — confirm against the panel schedule.`;
+          } else {
+            msg+=`A branch reading low here, or an <b>unmetered load</b> tapped off the main, would both produce this shortfall.`;
+          }
+        }
+        add(F,'red',msg);
+      });
+      // watch-band phases
+      PHASES.filter(p=>resid[p].dp!==null&&Math.abs(resid[p].dp)>KCL_OK&&Math.abs(resid[p].dp)<=KCL_WATCH)
+        .forEach(ph=>add(F,'amber',`<b>${ph.toUpperCase()} slightly out of balance</b> `
+          +`(<code>${resid[ph].dp>=0?'+':''}${resid[ph].dp.toFixed(2)}%</code>). Within a range explainable by `
+          +`CT accuracy class and non-simultaneous polling, but worth a glance if it persists or grows.`));
+    }
+ 
+    // 2. per-leg power factor sanity (needs per-leg watts)
+    [MAIN_ID,...branches].forEach(id=>{ if(!online(id))return; const L=state[id].latest;
+      PHASES.forEach((ph,pi)=>{ const v=L['v'+(pi+1)],i=L[ph],w=L['w'+(pi+1)];
+        const pf=pfLeg(w,v,i); if(pf===null)return;
+        if(pf>PF_MAX){
+          add(F,'red',`<b>${nmeterName(id)} ${ph.toUpperCase()} power factor = `
+            +`<code>${pf.toFixed(2)}</code> — physically impossible.</b> `
+            +`<code>PF = W/(V·I) = ${w.toFixed(0)}/(${v.toFixed(0)}×${i.toFixed(1)})</code>. `
+            +`A passive load cannot exceed unity, so this is a metering fault: the ${ph.toUpperCase()} CT is almost `
+            +`certainly paired with a <b>voltage reference from the wrong phase</b> (a 30–60° phase error inflates the `
+            +`computed real power), or the CT primary ratio is set <b>below</b> the installed CT. Verify CT-to-PT phase association and the CT ratio.`);
+        } else if(i>5 && pf<PF_LOW && w>=0){
+          add(F,'amber',`<b>${nmeterName(id)} ${ph.toUpperCase()} PF low (<code>${pf.toFixed(2)}</code>)</b> at ${i.toFixed(0)} A. `
+            +`Could be a lightly-loaded/reactive feeder or harmonics — or the first sign of a CT/PT phase mismatch. Cross-check with the other legs.`);
+        }
+        if(w<-2 && i>2){
+          add(F,'red',`<b>${nmeterName(id)} ${ph.toUpperCase()} shows negative real power</b> `
+            +`(<code>${w.toFixed(0)} W</code>) while <code>${i.toFixed(1)} A</code> flows. On a load panel this means the `
+            +`<b>CT is installed backwards</b> (or on the wrong phase). Flip the CT orientation (H1↔H2) or correct the phase mapping. `
+            +`Only ignore this if that circuit legitimately back-feeds (e.g. PV).`);
+        }
+      });
+    });
+ 
+    // 3. voltage fleet consistency + √3 detection
+    // Use the MEDIAN as the reference so a single mis-configured meter can't drag
+    // the baseline and throw false deviations on the healthy meters.
+    if(vlist.length>=2){
+      const sorted=vlist.map(x=>x.vavg).sort((a,b)=>a-b);
+      const mid=Math.floor(sorted.length/2);
+      const mean= sorted.length%2 ? sorted[mid] : (sorted[mid-1]+sorted[mid])/2;
+      vlist.forEach(({id,vavg})=>{ const dev=(vavg-mean)/mean*100; const ratio=vavg/mean;
+        if(Math.abs(ratio-ROOT3)<0.06||Math.abs(ratio-1/ROOT3)<0.03){
+          add(F,'red',`<b>${nmeterName(id)} voltage off by ≈√3</b> `
+            +`(<code>${vavg.toFixed(0)} V</code> vs fleet mean <code>${mean.toFixed(0)} V</code>, ratio ${ratio.toFixed(2)}). `
+            +`A factor of 1.732 is the line-to-line ÷ line-to-neutral relationship — this meter is configured for the `
+            +`<b>wrong voltage service</b> (wye vs delta / L-N vs L-L). Fix the meter's voltage configuration; note that a `
+            +`mis-scaled voltage also mis-scales its wattage and power-factor.`);
+        } else if(Math.abs(dev)>V_DEV){
+          add(F,'amber',`<b>${nmeterName(id)} voltage deviates ${dev>=0?'+':''}${dev.toFixed(1)}%</b> from the `
+            +`fleet mean (${vavg.toFixed(0)} V vs ${mean.toFixed(0)} V). Meters on one bus should track within ~1–2%; `
+            +`a larger gap points to a PT/scaling setting or a real distribution issue on that feeder.`);
+        }
+      });
+    }
+ 
+    // 4. internal watt consistency
+    [MAIN_ID,...branches].forEach(id=>{ if(!online(id))return; const L=state[id].latest;
+      const legSum=(L.w1||0)+(L.w2||0)+(L.w3||0);
+      if(L.totalW>1000 && Math.abs(legSum-L.totalW)/L.totalW>0.05){
+        add(F,'amber',`<b>${nmeterName(id)}</b> per-leg watts sum to <code>${(legSum/1000).toFixed(1)} kW</code> but the meter `
+          +`reports <code>${(L.totalW/1000).toFixed(1)} kW</code> total (${((legSum-L.totalW)/L.totalW*100).toFixed(0)}% apart). `
+          +`Internal inconsistency — usually a per-leg CT/PT scaling mismatch inside that meter.`);
+      }
+    });
+ 
+    // 5. all-clear + standing engineering caveat
+    if(!F.some(f=>f.sev==='red')&&!F.some(f=>f.sev==='amber')){
+      add(F,'green',`<b>All checks pass.</b> Every phase reconciles within ±${KCL_OK}%, all power factors are `
+        +`physically valid (0–1), voltages track together, and no reversed CTs detected. Data is internally consistent.`);
+    }
+    const skew=((branches.length)*0.4).toFixed(1);
+    add(F,'info',`<b>Reading the tolerances.</b> Meters are polled sequentially (~${skew}s spread end-to-end), so on a `
+      +`swinging load the instantaneous KCL sum will never close perfectly — a few percent is normal. Revenue CTs are `
+      +`class 0.5–1.0, i.e. ±0.5–1.0% each, and those errors add in quadrature across ${branches.length} branches. That is why `
+      +`the ±${KCL_OK}% band reads "consistent" and only a sustained &gt;${KCL_WATCH}% gap is called an anomaly. A single leg that is `
+      +`high or low while the others balance is the classic CT-ratio / phase-swap signature; a whole meter off by ×2, ×0.5, or ×√3 is a configuration scaling error.`);
+ 
+    const box=document.getElementById('ts-findings'); box.innerHTML='';
+    F.forEach(f=>{ const d=document.createElement('div'); d.className='ts-find '+f.sev;
+      d.innerHTML=`<div class="fdot"></div><div>${f.html}</div>`; box.appendChild(d); });
+  }
+ 
+  /* ---------- boot ---------- */
+  function boot(){
+    injectStyle(); buildDom(); render();
+    if(typeof updateSummary==='function'){
+      const _o=updateSummary; window.updateSummary=function(){ _o.apply(this,arguments); render(); };
+    }
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot);
+  else boot();
+  window.__tsRender=render; // exposed for tests
+})();
+
 </script>
 </body>
 </html>
