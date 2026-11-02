@@ -741,9 +741,9 @@ const GAS = {
   id: '000300016825',
   name: 'E1 Paint Booth Gas (QA40)',
   pulseField: 'Pulse_Cnt_1',   // QA40 landed on pulse input 1
-  m3PerPulse: 0.1,             // ← SET FROM QA40 NAMEPLATE / E1 LABEL ("1 imp = X m³")
-  indexBaseM3: 13572.6,        // QA40 analog index read on site...
-  indexBaseCount: 9611,        // ...at this Pulse_Cnt_1 value (10/30/26)
+  m3PerPulse: 1.0,             // QA40: 1 pulse = 1.0 m³ (10/30→11/02: +43 pulses, +44.9 m³ on face)
+  indexBaseM3: 13617.5,        // QA40 analog index read on site...
+  indexBaseCount: 9654,        // ...at this Pulse_Cnt_1 value (11/02/26)
   utcOffsetHours: -7,          // Arizona, no DST
   flowWindowMin: 15,           // flow averaged over this window
   staleMin: 5                  // status goes red if newest read is older than this
