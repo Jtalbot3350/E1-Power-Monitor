@@ -875,7 +875,10 @@ const GAS = {
   flowWindowMin: 15,           // flow averaged over this window
   staleMin: 5,                 // status goes red if newest read is older than this
   btuPerFt3: 1037,             // heating value for Therms/MMBtu: use the BTU factor on your gas bill
-  summaryRefreshMin: 15        // how often to re-pull hourly history from EKM
+  summaryRefreshMin: 15,       // how often to re-pull hourly history from EKM
+  trackingStart: '2026-10-30', // daily log starts Friday 10/30 (ignores install/bench-test history)
+  trackingBaseCount: 9611,     // Pulse_Cnt_1 at the start of tracking (index 13,572.6 m³ on 10/30)
+  maxM3PerHour: 80             // QA40 tops out ~65 m³/hr; anything above is a data glitch
 };
 
 const HISTORY_LEN = 720;     // 12hrs at 1/min
@@ -1676,7 +1679,7 @@ function buildGasDailyCard() {
 
     <div class="gd-table-wrap">
       <table class="gd-table">
-        <thead><tr><th>Day</th><th>Therms</th><th>CCF</th><th>MCF</th><th>MMBtu/Dth</th><th>m³</th><th>ft³</th></tr></thead>
+        <thead><tr><th>Day</th><th>Therms</th><th>CCF</th><th>MCF</th><th>MMBtu/Dth</th><th>m³</th><th>ft³</th><th>Hrs Reported</th></tr></thead>
         <tbody id="gd-tbody"></tbody>
         <tfoot id="gd-tfoot"></tfoot>
       </table>
@@ -1706,6 +1709,7 @@ function buildGasDailyCard() {
 function selectDay(key) {
   const today = gasDayKey(Date.now());
   if (key > today) key = today;
+  if (key < GAS.trackingStart) key = GAS.trackingStart;
   gasDaily.selected = key;
   document.getElementById('gd-date').value = key;
   renderDaily();
@@ -1725,19 +1729,30 @@ async function fetchGasSummary() {
       throw new Error('Summary API: ' + ((json && (json.error || json.message || json.status)) || 'unexpected response'));
     }
     const fMax = GAS.pulseField + '_Max', fMin = GAS.pulseField + '_Min';
+    // Counts below the tracking baseline (bench tests, pre-install) are clamped so they never show as usage
+    const base = GAS.trackingBaseCount;
     const rows = json
       .map(r => ({ t: Number(r.Start_Time_Stamp_UTC_ms), max: Number(r[fMax]), min: Number(r[fMin]) }))
       .filter(r => Number.isFinite(r.t) && Number.isFinite(r.max))
+      .map(r => ({ t: r.t, max: Math.max(r.max, base), min: Number.isFinite(r.min) ? Math.max(r.min, base) : NaN }))
       .sort((a, b) => a.t - b.t);
 
     // Hour usage = this hour's highest count minus the previous hour's highest count
     // (catches pulses that land between summaries). Reset/first row falls back to Max-Min.
+    // Only bridge to the previous hour if it is the hour right before this one;
+    // after a data gap, use just this hour's own Max-Min so offline catch-up isn't dumped into one hour.
     const byDay = {};
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
-      let used = i > 0 ? r.max - rows[i - 1].max : r.max - (Number.isFinite(r.min) ? r.min : r.max);
-      if (used < 0) used = Number.isFinite(r.min) ? Math.max(0, r.max - r.min) : 0;
       const key = gasDayKey(r.t);
+      if (key < GAS.trackingStart) continue;
+      const own = Number.isFinite(r.min) ? Math.max(0, r.max - r.min) : 0;
+      const prev = rows[i - 1];
+      const adjacent = prev && (r.t - prev.t) <= HR_MS * 1.1;
+      let used = adjacent ? r.max - prev.max : own;
+      if (used < 0) used = own;
+      if (used * GAS.m3PerPulse > GAS.maxM3PerHour) used = own;
+      if (used * GAS.m3PerPulse > GAS.maxM3PerHour) used = 0;
       if (!byDay[key]) byDay[key] = { hourly: new Array(24).fill(0), hours: 0 };
       byDay[key].hourly[gasHour(r.t)] += used * GAS.m3PerPulse;
       byDay[key].hours++;
@@ -1777,10 +1792,17 @@ function dayHourly(key) {
   return out;
 }
 
+// Every calendar day from the tracking start through today, even days with no gas use
 function allDayKeys() {
-  const keys = new Set(Object.keys(gasDaily.byDay));
-  if (gasState.calc) keys.add(gasDayKey(Date.now()));
-  return [...keys].sort();
+  const today = gasDayKey(Date.now());
+  const keys = [];
+  for (let k = GAS.trackingStart; k <= today && keys.length < 3660; k = shiftDay(k, 1)) keys.push(k);
+  return keys;
+}
+function dayHours(k) {
+  if (k === gasDayKey(Date.now())) return 'live';
+  const s = gasDaily.byDay[k];
+  return s ? String(s.hours) : '0';
 }
 
 function renderDaily() {
@@ -1792,7 +1814,7 @@ function renderDaily() {
   const first = keys[0];
 
   document.getElementById('gd-date').max = today;
-  if (first) document.getElementById('gd-date').min = first;
+  document.getElementById('gd-date').min = first || GAS.trackingStart;
   document.getElementById('gd-next').disabled = key >= today;
   document.getElementById('gd-prev').disabled = !!first && key <= first;
   document.getElementById('gd-dayname').textContent = key === today ? 'Today · ' + dayLabel(key, true) : dayLabel(key, true);
@@ -1829,7 +1851,7 @@ function renderDaily() {
   const st = document.getElementById('status-gasday');
   if (!gasDaily.error) {
     wrap.className = gasDaily.loaded ? 'card-status ok' : 'card-status loading';
-    st.textContent = gasDaily.loaded ? `${keys.length} Days` : 'Loading';
+    st.textContent = gasDaily.loaded ? `${keys.length} Day${keys.length === 1 ? '' : 's'}` : 'Loading';
   }
 
   // Table: newest first
@@ -1847,24 +1869,25 @@ function renderDaily() {
       <td class="${z}">${u.mmbtu.toFixed(3)}</td>
       <td class="${z}">${Math.round(u.m3).toLocaleString()}</td>
       <td class="${z}">${Math.round(u.ft3).toLocaleString()}</td>
+      <td class="zero">${dayHours(k)}</td>
     </tr>`;
   }).join('');
   document.getElementById('gd-tbody').innerHTML = rowsHtml ||
-    '<tr><td colspan="7" style="text-align:center;color:var(--muted)">No history yet</td></tr>';
+    '<tr><td colspan="8" style="text-align:center;color:var(--muted)">No history yet</td></tr>';
   const T = gasUnits(tot);
   document.getElementById('gd-tfoot').innerHTML = keys.length
-    ? `<tr><td>Total · ${keys.length} days</td><td class="therm">${T.therms.toFixed(1)}</td><td>${T.ccf.toFixed(2)}</td>
+    ? `<tr><td>Total · ${keys.length} day${keys.length === 1 ? '' : 's'}</td><td class="therm">${T.therms.toFixed(1)}</td><td>${T.ccf.toFixed(2)}</td>
        <td>${T.mcf.toFixed(3)}</td><td>${T.mmbtu.toFixed(3)}</td><td>${Math.round(T.m3).toLocaleString()}</td>
-       <td>${Math.round(T.ft3).toLocaleString()}</td></tr>` : '';
+       <td>${Math.round(T.ft3).toLocaleString()}</td><td></td></tr>` : '';
 }
 
 function exportGasCsv() {
-  const lines = ['Date,Therms,CCF,MCF,MMBtu_Dth,m3,ft3'];
+  const lines = ['Date,Therms,CCF,MCF,MMBtu_Dth,m3,ft3,Hours_Reported'];
   allDayKeys().forEach(k => {
     const h = dayHourly(k) || [];
     const u = gasUnits(h.reduce((a, b) => a + b, 0));
     lines.push([k, u.therms.toFixed(2), u.ccf.toFixed(3), u.mcf.toFixed(4), u.mmbtu.toFixed(4),
-      u.m3.toFixed(1), u.ft3.toFixed(0)].join(','));
+      u.m3.toFixed(1), u.ft3.toFixed(0), dayHours(k)].join(','));
   });
   const blob = new Blob([lines.join('\r\n')], { type: 'text/csv' });
   const a = document.createElement('a');
