@@ -645,6 +645,133 @@
     .gas-ro-value { font-size: 17px; }
     .gas-readout.main .gas-ro-value { font-size: 20px; }
   }
+  /* ── GAS DAILY USAGE ── */
+  .gas-daily { grid-column: 1 / -1; }
+  .gd-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .gd-btn {
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 11px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .gd-btn:hover { border-color: var(--gas); color: var(--gas); }
+  .gd-btn:disabled { opacity: 0.4; cursor: default; color: var(--muted); border-color: var(--border); }
+  .gd-date {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    padding: 5px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    background: var(--panel);
+  }
+  .gd-dayname {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--gas);
+    margin-left: 4px;
+  }
+  .gd-range {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    margin-left: auto;
+  }
+  .gd-units {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 8px;
+  }
+  .gd-unit {
+    background: var(--panel-soft);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 10px 12px;
+  }
+  .gd-unit.main { background: var(--gas-bg); border-color: var(--gas-soft); }
+  .gd-unit-label {
+    font-size: 10px;
+    letter-spacing: 0.8px;
+    color: var(--text-soft);
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .gd-unit-sub { font-size: 9px; color: var(--muted); font-weight: 500; margin-top: 1px; }
+  .gd-unit-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--gas);
+    margin-top: 6px;
+    white-space: nowrap;
+  }
+  .gd-unit.main .gd-unit-value { font-size: 24px; }
+  .gd-table-wrap {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--panel);
+  }
+  .gd-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+  .gd-table th {
+    position: sticky;
+    top: 0;
+    background: var(--panel-soft);
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--muted);
+    text-align: right;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .gd-table th:first-child, .gd-table td:first-child { text-align: left; }
+  .gd-table td {
+    text-align: right;
+    padding: 7px 12px;
+    border-bottom: 1px solid #eef1f5;
+    color: var(--text);
+  }
+  .gd-table tbody tr { cursor: pointer; }
+  .gd-table tbody tr:hover td { background: #f3f8fa; }
+  .gd-table tbody tr.sel td { background: var(--gas-bg); font-weight: 700; }
+  .gd-table td.therm { color: var(--gas); font-weight: 700; }
+  .gd-table td.zero { color: var(--muted); }
+  .gd-table tfoot td {
+    position: sticky;
+    bottom: 0;
+    background: var(--panel-soft);
+    border-top: 1px solid var(--border);
+    font-weight: 700;
+  }
+  @media (max-width: 1100px) { .gd-units { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 600px) {
+    .gd-units { grid-template-columns: repeat(2, 1fr); }
+    .gd-range { margin-left: 0; width: 100%; }
+  }
+  @media print {
+    .gd-controls .gd-btn, .gd-table-wrap { display: none !important; }
+    .gd-unit-value { font-size: 13px !important; }
+  }
   @media print {
     .gas-readout { min-height: 0 !important; padding: 6px !important; }
     .gas-ro-value { font-size: 14px !important; }
@@ -746,7 +873,9 @@ const GAS = {
   indexBaseCount: 9654,        // ...at this Pulse_Cnt_1 value (11/02/26)
   utcOffsetHours: -7,          // Arizona, no DST
   flowWindowMin: 15,           // flow averaged over this window
-  staleMin: 5                  // status goes red if newest read is older than this
+  staleMin: 5,                 // status goes red if newest read is older than this
+  btuPerFt3: 1037,             // heating value for Therms/MMBtu: use the BTU factor on your gas bill
+  summaryRefreshMin: 15        // how often to re-pull hourly history from EKM
 };
 
 const HISTORY_LEN = 720;     // 12hrs at 1/min
@@ -1251,11 +1380,11 @@ function buildGasCard() {
 
     <div class="stats-row">
       <div class="stat-cell">
-        <div class="stat-cell-label">Today ft³</div>
+        <div class="stat-cell-label">Today CCF</div>
         <div class="stat-cell-value gas" id="gas-today-ft3">—</div>
       </div>
       <div class="stat-cell">
-        <div class="stat-cell-label">Flow ft³/hr</div>
+        <div class="stat-cell-label">Today Therms</div>
         <div class="stat-cell-value gas" id="gas-flow-ft3">—</div>
       </div>
       <div class="stat-cell">
@@ -1369,12 +1498,13 @@ function renderGas(g) {
   document.getElementById('gas-today').textContent = fmtM3(g.todayM3);
   document.getElementById('gas-flow').textContent = g.flowM3h.toFixed(GAS_DEC);
   document.getElementById('gas-index').textContent = g.indexM3.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-  document.getElementById('gas-today-ft3').textContent = fmtWhole(g.todayM3 * FT3_PER_M3);
-  document.getElementById('gas-flow-ft3').textContent = fmtWhole(g.flowM3h * FT3_PER_M3);
+  const uToday = gasUnits(g.todayM3);
+  document.getElementById('gas-today-ft3').textContent = uToday.ccf.toFixed(2);
+  document.getElementById('gas-flow-ft3').textContent = uToday.therms.toFixed(1);
   document.getElementById('gas-count').textContent = fmtWhole(g.last.c);
   document.getElementById('gas-lastpulse').textContent = g.lastPulseT ? gasClock(g.lastPulseT) : 'None';
   document.getElementById('upd-gas').textContent = gasClock(g.last.t);
-  document.getElementById('sum-gas').textContent = fmtM3(g.todayM3) + ' m³';
+  document.getElementById('sum-gas').textContent = uToday.therms.toFixed(1) + ' thm';
 
   const statusWrap = document.getElementById('status-wrap-gas');
   const statusEl = document.getElementById('status-gas');
@@ -1391,12 +1521,18 @@ function renderGas(g) {
     : `Full day since 00:00 Arizona time. 1 pulse = ${GAS.m3PerPulse} m³.`;
 
   drawGasChart();
+  renderDaily();
 }
 
 function drawGasChart() {
   const g = gasState.calc;
-  const canvas = document.getElementById('chart-gas');
-  if (!canvas || !g) return;
+  if (!g) return;
+  drawHourBars(document.getElementById('chart-gas'), g.hourlyM3, gasHour(g.now), gasHour(g.now));
+}
+
+// Hourly bar chart: bars up to `lastHour`, `hiHour` drawn dark (-1 = all dark)
+function drawHourBars(canvas, hourlyM3, lastHour, hiHour) {
+  if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -1411,8 +1547,7 @@ function drawGasChart() {
   ctx.fillStyle = '#f7f9fb';
   ctx.fillRect(0, 0, W, H);
 
-  // Nice Y max
-  const peak = Math.max(...g.hourlyM3);
+  const peak = Math.max(...hourlyM3);
   let yMax = GAS.m3PerPulse * 10;
   if (peak > 0) {
     const p = Math.pow(10, Math.floor(Math.log10(peak)));
@@ -1420,7 +1555,6 @@ function drawGasChart() {
     yMax = (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
   }
 
-  // Grid + Y labels
   ctx.font = '9px "JetBrains Mono", monospace';
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
@@ -1430,20 +1564,17 @@ function drawGasChart() {
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + CW, y); ctx.stroke();
     ctx.fillStyle = '#8590a0';
-    const v = (yMax / 4) * i;
-    ctx.fillText(v.toLocaleString(undefined, { maximumFractionDigits: 2 }), PAD_L - 4, y);
+    ctx.fillText(((yMax / 4) * i).toLocaleString(undefined, { maximumFractionDigits: 2 }), PAD_L - 4, y);
   }
 
-  // Bars
-  const nowHour = gasHour(g.now);
   const bw = CW / 24;
-  for (let i = 0; i <= nowHour; i++) {
+  for (let i = 0; i <= lastHour; i++) {
     const x = PAD_L + i * bw + bw * 0.15;
     const w = bw * 0.7;
-    const v = g.hourlyM3[i];
+    const v = hourlyM3[i];
     if (v > 0) {
       const bh = Math.max(2, (v / yMax) * CH);
-      ctx.fillStyle = i === nowHour ? '#0e7490' : '#9fd3df';
+      ctx.fillStyle = (hiHour < 0 || i === hiHour) ? '#0e7490' : '#9fd3df';
       ctx.fillRect(x, PAD_T + CH - bh, w, bh);
     } else {
       ctx.fillStyle = '#c3cad1';
@@ -1451,7 +1582,6 @@ function drawGasChart() {
     }
   }
 
-  // X labels every 3 hrs
   ctx.fillStyle = '#8590a0';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
@@ -1462,7 +1592,6 @@ function drawGasChart() {
     ctx.fillText(h.toString().padStart(2, '0') + ':00', x, PAD_T + CH + 6);
   }
 
-  // Axes
   ctx.strokeStyle = '#d6dde5';
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -1470,6 +1599,280 @@ function drawGasChart() {
   ctx.lineTo(PAD_L, PAD_T + CH);
   ctx.lineTo(PAD_L + CW, PAD_T + CH);
   ctx.stroke();
+}
+
+// ════════════════════════════════════════════
+//  GAS DAILY USAGE (pick a day)
+// ════════════════════════════════════════════
+function gasUnits(m3) {
+  const ft3 = m3 * FT3_PER_M3;
+  const therms = ft3 * GAS.btuPerFt3 / 100000;
+  return { m3, ft3, ccf: ft3 / 100, mcf: ft3 / 1000, therms, mmbtu: therms / 10 };
+}
+
+const gasDaily = { byDay: {}, loaded: false, error: null, selected: null, lastFetch: 0 };
+const p2 = n => String(n).padStart(2, '0');
+function gasDayKey(ms) {
+  const d = new Date(ms + GAS_OFF);
+  return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`;
+}
+function shiftDay(key, n) {
+  const [y, m, d] = key.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + n));
+  return `${t.getUTCFullYear()}-${p2(t.getUTCMonth() + 1)}-${p2(t.getUTCDate())}`;
+}
+function dayLabel(key, long) {
+  const [y, m, d] = key.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.toLocaleDateString(undefined, long
+    ? { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }
+    : { weekday: 'short', month: '2-digit', day: '2-digit', year: 'numeric', timeZone: 'UTC' });
+}
+
+function buildGasDailyCard() {
+  const card = document.createElement('div');
+  card.className = 'meter-card gas-daily';
+  card.id = 'card-gas-daily';
+  card.innerHTML = `
+    <div class="card-header">
+      <div>
+        <div class="meter-name">Gas Daily Usage · E1 Paint Booth</div>
+        <div class="meter-id">Pick a day · Arizona time · 1 therm = 100,000 BTU · ${GAS.btuPerFt3} BTU/ft³</div>
+      </div>
+      <div class="card-status loading" id="status-wrap-gasday">
+        <div class="status-dot"></div>
+        <span id="status-gasday">Loading</span>
+      </div>
+    </div>
+
+    <div class="gd-controls">
+      <button class="gd-btn" id="gd-prev" title="Previous day">◀</button>
+      <input type="date" class="gd-date" id="gd-date">
+      <button class="gd-btn" id="gd-next" title="Next day">▶</button>
+      <button class="gd-btn" id="gd-today">Today</button>
+      <span class="gd-dayname" id="gd-dayname"></span>
+      <span class="gd-range" id="gd-range"></span>
+      <button class="gd-btn" id="gd-csv">Export CSV</button>
+    </div>
+
+    <div class="gd-units">
+      <div class="gd-unit main"><div class="gd-unit-label">Therms</div><div class="gd-unit-sub">100,000 BTU</div><div class="gd-unit-value" id="gd-therms">—</div></div>
+      <div class="gd-unit"><div class="gd-unit-label">CCF</div><div class="gd-unit-sub">100 ft³</div><div class="gd-unit-value" id="gd-ccf">—</div></div>
+      <div class="gd-unit"><div class="gd-unit-label">MCF</div><div class="gd-unit-sub">1,000 ft³</div><div class="gd-unit-value" id="gd-mcf">—</div></div>
+      <div class="gd-unit"><div class="gd-unit-label">MMBtu / Dth</div><div class="gd-unit-sub">1,000,000 BTU</div><div class="gd-unit-value" id="gd-mmbtu">—</div></div>
+      <div class="gd-unit"><div class="gd-unit-label">Cubic Meters</div><div class="gd-unit-sub">m³ (meter units)</div><div class="gd-unit-value" id="gd-m3">—</div></div>
+      <div class="gd-unit"><div class="gd-unit-label">Cubic Feet</div><div class="gd-unit-sub">ft³</div><div class="gd-unit-value" id="gd-ft3">—</div></div>
+    </div>
+
+    <div class="chart-section">
+      <div class="chart-header">
+        <div class="chart-label" id="gd-chart-label">Hourly Use (m³)</div>
+      </div>
+      <div class="chart-wrap" style="height:150px">
+        <canvas id="chart-gas-day"></canvas>
+        <div class="chart-loading" id="chart-loading-gasday">LOADING GAS HISTORY…</div>
+      </div>
+    </div>
+
+    <div class="gd-table-wrap">
+      <table class="gd-table">
+        <thead><tr><th>Day</th><th>Therms</th><th>CCF</th><th>MCF</th><th>MMBtu/Dth</th><th>m³</th><th>ft³</th></tr></thead>
+        <tbody id="gd-tbody"></tbody>
+        <tfoot id="gd-tfoot"></tfoot>
+      </table>
+    </div>
+
+    <div class="gas-note" id="gd-note"></div>
+    <div class="error-msg" id="err-gasday"></div>
+  `;
+  document.getElementById('meter-grid').appendChild(card);
+
+  const today = gasDayKey(Date.now());
+  gasDaily.selected = today;
+  const inp = document.getElementById('gd-date');
+  inp.value = today;
+  inp.max = today;
+  inp.addEventListener('change', () => { if (inp.value) selectDay(inp.value); });
+  document.getElementById('gd-prev').addEventListener('click', () => selectDay(shiftDay(gasDaily.selected, -1)));
+  document.getElementById('gd-next').addEventListener('click', () => selectDay(shiftDay(gasDaily.selected, 1)));
+  document.getElementById('gd-today').addEventListener('click', () => selectDay(gasDayKey(Date.now())));
+  document.getElementById('gd-csv').addEventListener('click', exportGasCsv);
+  document.getElementById('gd-tbody').addEventListener('click', e => {
+    const tr = e.target.closest('tr[data-day]');
+    if (tr) selectDay(tr.dataset.day);
+  });
+}
+
+function selectDay(key) {
+  const today = gasDayKey(Date.now());
+  if (key > today) key = today;
+  gasDaily.selected = key;
+  document.getElementById('gd-date').value = key;
+  renderDaily();
+}
+
+async function fetchGasSummary() {
+  const meterNum = GAS.id.replace(/^0+/, '');
+  const url = `https://summary.ekmpush.com/summary?meters=${meterNum}&key=${API_KEY}` +
+    `&format=json&report=hr&limit=1000&timezone=America~Phoenix&fields=${GAS.pulseField}*`;
+  const wrap = document.getElementById('status-wrap-gasday');
+  const errEl = document.getElementById('err-gasday');
+  try {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`Summary API HTTP ${res.status}`);
+    const json = await res.json();
+    if (!Array.isArray(json)) {
+      throw new Error('Summary API: ' + ((json && (json.error || json.message || json.status)) || 'unexpected response'));
+    }
+    const fMax = GAS.pulseField + '_Max', fMin = GAS.pulseField + '_Min';
+    const rows = json
+      .map(r => ({ t: Number(r.Start_Time_Stamp_UTC_ms), max: Number(r[fMax]), min: Number(r[fMin]) }))
+      .filter(r => Number.isFinite(r.t) && Number.isFinite(r.max))
+      .sort((a, b) => a.t - b.t);
+
+    // Hour usage = this hour's highest count minus the previous hour's highest count
+    // (catches pulses that land between summaries). Reset/first row falls back to Max-Min.
+    const byDay = {};
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      let used = i > 0 ? r.max - rows[i - 1].max : r.max - (Number.isFinite(r.min) ? r.min : r.max);
+      if (used < 0) used = Number.isFinite(r.min) ? Math.max(0, r.max - r.min) : 0;
+      const key = gasDayKey(r.t);
+      if (!byDay[key]) byDay[key] = { hourly: new Array(24).fill(0), hours: 0 };
+      byDay[key].hourly[gasHour(r.t)] += used * GAS.m3PerPulse;
+      byDay[key].hours++;
+    }
+    gasDaily.byDay = byDay;
+    gasDaily.loaded = true;
+    gasDaily.error = null;
+    gasDaily.lastFetch = Date.now();
+    errEl.style.display = 'none';
+  } catch (e) {
+    gasDaily.error = e.message;
+    errEl.textContent = '⚠ ' + e.message + ' (today still shows live data)';
+    errEl.style.display = 'block';
+    wrap.className = 'card-status error';
+    document.getElementById('status-gasday').textContent = 'History Error';
+  }
+  const loadEl = document.getElementById('chart-loading-gasday');
+  if (loadEl) loadEl.style.display = 'none';
+  renderDaily();
+}
+
+// Hourly m³ for a day: summaries, with today's hours filled from the live 1-min reads
+function dayHourly(key) {
+  const s = gasDaily.byDay[key];
+  const sum = s ? s.hourly.slice() : null;
+  const g = gasState.calc;
+  if (key !== gasDayKey(Date.now()) || !g) return sum;
+  const rt = g.hourlyM3;
+  const coverHour = g.partialDay && g.coverFrom ? gasHour(g.coverFrom) : -1;
+  const out = new Array(24).fill(0);
+  for (let h = 0; h < 24; h++) {
+    const sv = sum ? sum[h] : 0;
+    if (h > coverHour) out[h] = coverHour < 0 ? rt[h] : (h === coverHour ? Math.max(rt[h], sv) : rt[h]);
+    else if (h === coverHour) out[h] = Math.max(rt[h], sv);
+    else out[h] = sv;
+  }
+  return out;
+}
+
+function allDayKeys() {
+  const keys = new Set(Object.keys(gasDaily.byDay));
+  if (gasState.calc) keys.add(gasDayKey(Date.now()));
+  return [...keys].sort();
+}
+
+function renderDaily() {
+  const card = document.getElementById('card-gas-daily');
+  if (!card) return;
+  const today = gasDayKey(Date.now());
+  const key = gasDaily.selected || today;
+  const keys = allDayKeys();
+  const first = keys[0];
+
+  document.getElementById('gd-date').max = today;
+  if (first) document.getElementById('gd-date').min = first;
+  document.getElementById('gd-next').disabled = key >= today;
+  document.getElementById('gd-prev').disabled = !!first && key <= first;
+  document.getElementById('gd-dayname').textContent = key === today ? 'Today · ' + dayLabel(key, true) : dayLabel(key, true);
+  document.getElementById('gd-range').textContent = first
+    ? `History: ${dayLabel(first)} → ${dayLabel(today)}` : '';
+
+  const hourly = dayHourly(key);
+  const ids = ['therms', 'ccf', 'mcf', 'mmbtu', 'm3', 'ft3'];
+  if (!hourly) {
+    ids.forEach(id => document.getElementById('gd-' + id).textContent = '—');
+    drawHourBars(document.getElementById('chart-gas-day'), new Array(24).fill(0), -1, -1);
+    document.getElementById('gd-note').textContent = gasDaily.loaded
+      ? 'No gas data recorded for this day.' : 'Loading history…';
+  } else {
+    const u = gasUnits(hourly.reduce((a, b) => a + b, 0));
+    document.getElementById('gd-therms').textContent = u.therms.toFixed(1);
+    document.getElementById('gd-ccf').textContent = u.ccf.toFixed(2);
+    document.getElementById('gd-mcf').textContent = u.mcf.toFixed(3);
+    document.getElementById('gd-mmbtu').textContent = u.mmbtu.toFixed(3);
+    document.getElementById('gd-m3').textContent = Math.round(u.m3).toLocaleString();
+    document.getElementById('gd-ft3').textContent = Math.round(u.ft3).toLocaleString();
+    const isToday = key === today;
+    const lastHour = isToday ? gasHour(Date.now()) : 23;
+    drawHourBars(document.getElementById('chart-gas-day'), hourly, lastHour, isToday ? lastHour : -1);
+    const s = gasDaily.byDay[key];
+    document.getElementById('gd-note').textContent = isToday
+      ? 'Today updates every minute from live reads. Past days come from EKM hourly summaries.'
+      : `${s ? s.hours : 0} of 24 hours reported for this day.` + (s && s.hours < 24 ? ' Hours with no report show as zero (gateway offline or no data yet).' : '');
+  }
+  document.getElementById('gd-chart-label').textContent = `Hourly Use (m³) · ${dayLabel(key)}`;
+
+  // Status pill
+  const wrap = document.getElementById('status-wrap-gasday');
+  const st = document.getElementById('status-gasday');
+  if (!gasDaily.error) {
+    wrap.className = gasDaily.loaded ? 'card-status ok' : 'card-status loading';
+    st.textContent = gasDaily.loaded ? `${keys.length} Days` : 'Loading';
+  }
+
+  // Table: newest first
+  let tot = 0;
+  const rowsHtml = keys.slice().reverse().map(k => {
+    const h = dayHourly(k) || [];
+    const u = gasUnits(h.reduce((a, b) => a + b, 0));
+    tot += u.m3;
+    const z = u.m3 === 0 ? ' zero' : '';
+    return `<tr data-day="${k}" class="${k === key ? 'sel' : ''}">
+      <td>${dayLabel(k)}${k === today ? ' · now' : ''}</td>
+      <td class="therm${z}">${u.therms.toFixed(1)}</td>
+      <td class="${z}">${u.ccf.toFixed(2)}</td>
+      <td class="${z}">${u.mcf.toFixed(3)}</td>
+      <td class="${z}">${u.mmbtu.toFixed(3)}</td>
+      <td class="${z}">${Math.round(u.m3).toLocaleString()}</td>
+      <td class="${z}">${Math.round(u.ft3).toLocaleString()}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('gd-tbody').innerHTML = rowsHtml ||
+    '<tr><td colspan="7" style="text-align:center;color:var(--muted)">No history yet</td></tr>';
+  const T = gasUnits(tot);
+  document.getElementById('gd-tfoot').innerHTML = keys.length
+    ? `<tr><td>Total · ${keys.length} days</td><td class="therm">${T.therms.toFixed(1)}</td><td>${T.ccf.toFixed(2)}</td>
+       <td>${T.mcf.toFixed(3)}</td><td>${T.mmbtu.toFixed(3)}</td><td>${Math.round(T.m3).toLocaleString()}</td>
+       <td>${Math.round(T.ft3).toLocaleString()}</td></tr>` : '';
+}
+
+function exportGasCsv() {
+  const lines = ['Date,Therms,CCF,MCF,MMBtu_Dth,m3,ft3'];
+  allDayKeys().forEach(k => {
+    const h = dayHourly(k) || [];
+    const u = gasUnits(h.reduce((a, b) => a + b, 0));
+    lines.push([k, u.therms.toFixed(2), u.ccf.toFixed(3), u.mcf.toFixed(4), u.mmbtu.toFixed(4),
+      u.m3.toFixed(1), u.ft3.toFixed(0)].join(','));
+  });
+  const blob = new Blob([lines.join('\r\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `E1_PaintBooth_Gas_Daily_${gasDayKey(Date.now())}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 
 // ════════════════════════════════════════════
@@ -1524,12 +1927,16 @@ function startCountdown() {
 // ════════════════════════════════════════════
 buildGrid();
 buildGasCard();
+buildGasDailyCard();
+fetchGasSummary();
+setInterval(fetchGasSummary, GAS.summaryRefreshMin * 60e3);
 fetchAll();
 startCountdown();
 
 window.addEventListener('resize', () => {
   METERS.forEach(m => drawChart(m.id, m.threshold));
   drawGasChart();
+  renderDaily();
 });
 </script>
 </body>
